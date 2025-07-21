@@ -176,6 +176,7 @@ def whois_text_to_table(whois_data):
           <tr><th><strong>{title}</strong></th></tr>
           <tr><td>{content_html}</td></tr>
         </table>
+        <br><br>
         """
     return html
 
@@ -204,6 +205,7 @@ def cert_text_to_table(cert_data):
           <tr><th><strong>{title}</strong></th></tr>
           <tr><td>{content_html}</td></tr>
         </table>
+        <br><br>
         """
     return html
 
