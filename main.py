@@ -282,7 +282,7 @@ def index():
             <button class="copy-button" onclick="copyToClipboard('geo-output')">📋 Kopiuj Tabela IP</button>
             <div id="geo-output">
             <table>
-              <tr><th><strong>Domena/Subdomena</strong></th><th><strong>Adres IP</strong></th><th><strong>Geo</strong></th></tr>
+              <tr><th style="text-align: center;"><strong>Domena/Subdomena</strong></th><th style="text-align: center;"><strong>Adres IP</strong></th><th style="text-align: center;"><strong>Geo</strong></th></tr>
             """
             for dom, ip_addr, loc in geo_rows:
                 geo_table_html += f"<tr><td>{dom}</td><td>{ip_addr}</td><td>{loc}</td></tr>"
