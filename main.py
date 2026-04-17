@@ -6,6 +6,7 @@ import hashlib
 import requests
 import io
 import re
+import time
 from urllib.parse import urlparse
 import ipaddress
 from cryptography import x509
@@ -93,7 +94,7 @@ HTML_FORM = """
 """
 
 # ==========================================
-# FUNKCJE ZBIERAJĄCE DANE (ZAMIAST BASH)
+# FUNKCJE ZBIERAJĄCE DANE
 # ==========================================
 
 def get_ip_and_geo(domain):
@@ -101,7 +102,7 @@ def get_ip_and_geo(domain):
     try:
         # Rozwiązywanie DNS w Pythonie
         ips = list(set([data[4][0] for data in socket.getaddrinfo(domain, 80)]))
-        ips = [ip for ip in ips if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip)] # Tylko IPv4 dla zgodności z geo API
+        ips = [ip for ip in ips if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip)] # Tylko IPv4
         
         country_code = "-"
         if ips:
@@ -115,63 +116,71 @@ def get_ip_and_geo(domain):
     except Exception:
         return "-", "-"
 
-def get_rdap_whois(domain):
-    """Pobiera i formatuje dane WHOIS używając rdap.org"""
-    try:
-        resp = requests.get(f"https://rdap.org/domain/{domain}", timeout=10)
-        if resp.status_code != 200:
-            return "Błąd: brak danych WHOIS"
-        
-        data = resp.json()
-        lines = []
-        
-        # Ekstrakcja podstawowych pól (zabezpieczona przed brakiem kluczy)
-        lines.append(f"Domain Name: {data.get('ldhName', domain).upper()}")
-        lines.append(f"Registry Domain ID: {data.get('handle', '')}")
-        
-        # Ekstrakcja dat z 'events'
-        events = data.get('events', [])
-        for event in events:
-            action = event.get('eventAction', '')
-            date = event.get('eventDate', '')
-            if action == 'registration': lines.append(f"Creation Date: {date}")
-            elif action == 'expiration': lines.append(f"Registry Expiry Date: {date}")
-            elif action == 'last changed': lines.append(f"Updated Date: {date}")
-
-        # Ekstrakcja rejestratora z 'entities'
-        entities = data.get('entities', [])
-        registrar_name = ""
-        for ent in entities:
-            if 'registrar' in ent.get('roles', []):
-                try:
-                    # Parsowanie vCard
-                    vcard = ent.get('vcardArray', [])[1]
-                    for item in vcard:
-                        if item[0] == 'fn':
-                            registrar_name = item[3]
-                            break
-                except: pass
-                lines.append(f"Registrar: {registrar_name}")
-                lines.append(f"Registrar IANA ID: {ent.get('publicIds', [{}])[0].get('identifier', '')}")
-        
-        # Statusy
-        for status in data.get('status', []):
-            lines.append(f"Domain Status: {status}")
+def get_rdap_whois(domain, retries=3):
+    """Pobiera i formatuje dane WHOIS używając rdap.org z mechanizmem ponawiania"""
+    for attempt in range(retries):
+        try:
+            resp = requests.get(f"https://rdap.org/domain/{domain}", timeout=10)
             
-        # Nameservery
-        for ns in data.get('nameservers', []):
-            lines.append(f"Name Server: {ns.get('ldhName', '').upper()}")
+            if resp.status_code == 200:
+                data = resp.json()
+                lines = []
+                
+                lines.append(f"Domain Name: {data.get('ldhName', domain).upper()}")
+                lines.append(f"Registry Domain ID: {data.get('handle', '')}")
+                
+                events = data.get('events', [])
+                for event in events:
+                    action = event.get('eventAction', '')
+                    date = event.get('eventDate', '')
+                    if action == 'registration': lines.append(f"Creation Date: {date}")
+                    elif action == 'expiration': lines.append(f"Registry Expiry Date: {date}")
+                    elif action == 'last changed': lines.append(f"Updated Date: {date}")
 
-        # Jeśli z jakiegoś powodu obiekt jest pusty
-        if len(lines) <= 2:
-            return "Błąd: brak szczegółowych danych w RDAP"
+                entities = data.get('entities', [])
+                registrar_name = ""
+                for ent in entities:
+                    if 'registrar' in ent.get('roles', []):
+                        try:
+                            vcard = ent.get('vcardArray', [])[1]
+                            for item in vcard:
+                                if item[0] == 'fn':
+                                    registrar_name = item[3]
+                                    break
+                        except: pass
+                        lines.append(f"Registrar: {registrar_name}")
+                        lines.append(f"Registrar IANA ID: {ent.get('publicIds', [{}])[0].get('identifier', '')}")
+                
+                for status in data.get('status', []):
+                    lines.append(f"Domain Status: {status}")
+                    
+                for ns in data.get('nameservers', []):
+                    lines.append(f"Name Server: {ns.get('ldhName', '').upper()}")
 
-        return "<br>".join(lines)
-    except Exception as e:
-        return "Błąd: brak danych WHOIS"
+                if len(lines) <= 2:
+                    return "Błąd: brak szczegółowych danych w RDAP"
+
+                return "<br>".join(lines)
+            
+            elif resp.status_code == 429:
+                # Zbyt wiele zapytań - czekamy rosnąco i ponawiamy
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                return f"Błąd: API zwróciło kod {resp.status_code}"
+                
+        except requests.exceptions.Timeout:
+            if attempt < retries - 1:
+                time.sleep(1)
+                continue
+            return "Błąd: Przekroczono czas oczekiwania na odpowiedź"
+        except Exception as e:
+            return f"Błąd: {str(e)}"
+            
+    return "Błąd: Zbyt wiele zapytań do RDAP (Limit). Spróbuj ponownie dla tej domeny."
 
 def get_ssl_cert(domain):
-    """Pobiera i formatuje dane Certyfikatu SSL dokładnie pod wskazany szablon"""
+    """Pobiera i formatuje dane Certyfikatu SSL pod wskazany szablon"""
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -181,10 +190,7 @@ def get_ssl_cert(domain):
             with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
                 cert_der = ssock.getpeercert(binary_form=True)
                 
-        # Parsowanie binarnych danych certyfikatu przy użyciu cryptography
         cert = x509.load_der_x509_certificate(cert_der, default_backend())
-        
-        # Wyciąganie pól
         serial = format(cert.serial_number, 'X')
         
         try:
@@ -200,7 +206,6 @@ def get_ssl_cert(domain):
         not_before = cert.not_valid_before.strftime("%b %d %H:%M:%S %Y GMT")
         not_after = cert.not_valid_after.strftime("%b %d %H:%M:%S %Y GMT")
         
-        # Obliczanie odcisków palca (odstępy z dwukropkami jak w openssl)
         sha256_hash = hashlib.sha256(cert_der).hexdigest().upper()
         sha256 = ':'.join(sha256_hash[i:i+2] for i in range(0, len(sha256_hash), 2))
         
@@ -246,12 +251,10 @@ def index():
         domains_input = request.form.get("domains", "")
         raw_domains = []
         
-        # Czyszczenie wejścia (wyciąganie samych nazw domen)
         for line in domains_input.splitlines():
             line = line.strip()
             if not line: continue
             
-            # Odrzuć surowe IP z wprowadzania (bo pytamy o domeny)
             try:
                 ipaddress.ip_address(line)
                 continue
@@ -270,23 +273,20 @@ def index():
             if host:
                 raw_domains.append(host)
                 
-        # Unikalne, posortowane domeny
         domains = sorted(set(raw_domains))
         
         if not domains:
             return render_template_string(HTML_FORM, error="<p class='error'>Brak poprawnych domen do analizy.</p>")
 
-        # WSPÓŁBIEŻNE WYKONYWANIE ZADAŃ (Prędkość Render.com zależy od tego!)
         results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Zmniejszono do 4 workerów, aby uniknąć błędów HTTP 429
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             future_to_domain = {executor.submit(process_domain, dom): dom for dom in domains}
             for future in concurrent.futures.as_completed(future_to_domain):
                 results.append(future.result())
 
-        # Sortowanie wyników po domenie dla porządku
         results = sorted(results, key=lambda x: x["domain"])
 
-        # Generowanie HTML na podstawie zebranych słowników
         geo_table_html = """<table>
           <tr><th style="text-align: center;"><strong>Domena/Subdomena</strong></th><th style="text-align: center;"><strong>Adres IP</strong></th><th style="text-align: center;"><strong>Geo</strong></th></tr>
         """
@@ -302,7 +302,6 @@ def index():
         
         geo_table_html += "</table>"
         
-        # Ten wiersz zapewnia, że eksportowany plik będzie miał to samo
         full_html = f"<h3>Domena → IP → Geolokalizacja</h3>\n{geo_table_html}\n{whois_html}\n{cert_html}"
 
         return render_template_string(HTML_FORM,
@@ -319,7 +318,6 @@ def zapisz_html():
     if not html_content.strip():
         return "Brak danych do zapisania", 400
 
-    # Zapis w pamięci operacyjnej zamiast na dysku - brak kolizji między użytkownikami!
     mem_file = io.BytesIO()
     
     full_document = f"""<!DOCTYPE html>
