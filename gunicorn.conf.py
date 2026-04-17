@@ -1,2 +1,2 @@
 # gunicorn.conf.py
-timeout = 800  # czas w sekundach
+timeout = 1000  # czas w sekundach
