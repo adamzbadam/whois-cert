@@ -32,7 +32,7 @@ while IFS= read -r domain || [[ -n "$domain" ]]; do
         fi
     else
         # Domena – przez API
-        response=$(curl -s --max-time 10 "https://api.whois.vu/?q=$domain")
+        response=$(curl -s --max-time 20 "https://api.whois.vu/?q=$domain")
         whois_text=$(echo "$response" | jq -r '.whois // empty' | sed 's/\\r\\n/\n/g; s/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g')
     fi
 
